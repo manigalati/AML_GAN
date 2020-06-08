@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2019, NVIDIA Corporation. All rights reserved.
+# Copyright (c) 2019, NVIDIA Corporation. All rights reserved.
 #
 # This work is made available under the Nvidia Source Code License-NC.
 # To view a copy of this license, visit
@@ -48,14 +48,14 @@ def dense_layer(x, fmaps, gain=1, use_wscale=True, lrmul=1, weight_var='weight')
 #----------------------------------------------------------------------------
 # Convolution layer with optional upsampling or downsampling.
 
-def conv2d_layer(x, fmaps, kernel, up=False, down=False, resample_kernel=None, gain=1, use_wscale=True, lrmul=1, weight_var='weight'):
+def conv2d_layer(x, fmaps, kernel, up=False, down=False, factor=2, resample_kernel=None, gain=1, use_wscale=True, lrmul=1, weight_var='weight'):
     assert not (up and down)
     assert kernel >= 1 and kernel % 2 == 1
     w = get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var)
     if up:
         x = upsample_conv_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
     elif down:
-        x = conv_downsample_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = conv_downsample_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel, factor=factor)
     else:
         x = tf.nn.conv2d(x, tf.cast(w, x.dtype), data_format='NCHW', strides=[1,1,1,1], padding='SAME')
     return x
@@ -86,10 +86,9 @@ def naive_downsample_2d(x, factor=2):
 #----------------------------------------------------------------------------
 # Modulated convolution layer.
 
-def modulated_conv2d_layer(x, y, fmaps, kernel, up=False, down=False, demodulate=True, resample_kernel=None, gain=1, use_wscale=True, lrmul=1, fused_modconv=True, weight_var='weight', mod_weight_var='mod_weight', mod_bias_var='mod_bias'):
+def modulated_conv2d_layer(x, y, fmaps, kernel, up=False, down=False, factor=2, demodulate=True, resample_kernel=None, gain=1, use_wscale=True, lrmul=1, fused_modconv=True, weight_var='weight', mod_weight_var='mod_weight', mod_bias_var='mod_bias'):
     assert not (up and down)
     assert kernel >= 1 and kernel % 2 == 1
-
     # Get weight.
     w = get_weight([kernel, kernel, x.shape[1].value, fmaps], gain=gain, use_wscale=use_wscale, lrmul=lrmul, weight_var=weight_var)
     ww = w[np.newaxis] # [BkkIO] Introduce minibatch dimension.
@@ -113,9 +112,9 @@ def modulated_conv2d_layer(x, y, fmaps, kernel, up=False, down=False, demodulate
 
     # Convolution with optional up/downsampling.
     if up:
-        x = upsample_conv_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = upsample_conv_2d(x, tf.cast(w, x.dtype), factor=factor, data_format='NCHW', k=resample_kernel)
     elif down:
-        x = conv_downsample_2d(x, tf.cast(w, x.dtype), data_format='NCHW', k=resample_kernel)
+        x = conv_downsample_2d(x, tf.cast(w, x.dtype), factor=factor, data_format='NCHW', k=resample_kernel)
     else:
         x = tf.nn.conv2d(x, tf.cast(w, x.dtype), data_format='NCHW', strides=[1,1,1,1], padding='SAME')
 
@@ -431,13 +430,22 @@ def G_synthesis_stylegan2(
     fused_modconv       = True,         # Implement modulated_conv2d_layer() as a single fused op?
     **_kwargs):                         # Ignore unrecognized keyword args.
 
+    resolution_log2 = np.log2(resolution).astype(int)
+    #assert resolution == 2**resolution_log2 and resolution >= 4
+    def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
+    assert architecture in ['orig', 'skip', 'resnet']
+    act = nonlinearity
+    num_layers = np.max(resolution_log2 * 2 - 2)
+    images_out = None
+    
+    """resolution=resolution[1]
     resolution_log2 = int(np.log2(resolution))
-    assert resolution == 2**resolution_log2 and resolution >= 4
+    #assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
     num_layers = resolution_log2 * 2 - 2
-    images_out = None
+    images_out = None"""
 
     # Primary inputs.
     dlatents_in.set_shape([None, num_layers, dlatent_size])
@@ -451,8 +459,8 @@ def G_synthesis_stylegan2(
         noise_inputs.append(tf.get_variable('noise%d' % layer_idx, shape=shape, initializer=tf.initializers.random_normal(), trainable=False))
 
     # Single convolution layer with all the bells and whistles.
-    def layer(x, layer_idx, fmaps, kernel, up=False):
-        x = modulated_conv2d_layer(x, dlatents_in[:, layer_idx], fmaps=fmaps, kernel=kernel, up=up, resample_kernel=resample_kernel, fused_modconv=fused_modconv)
+    def layer(x, layer_idx, fmaps, kernel, up=False, factor=2):
+        x = modulated_conv2d_layer(x, dlatents_in[:, layer_idx], factor=factor, fmaps=fmaps, kernel=kernel, up=up, resample_kernel=resample_kernel, fused_modconv=fused_modconv)
         if randomize_noise:
             noise = tf.random_normal([tf.shape(x)[0], 1, x.shape[2], x.shape[3]], dtype=x.dtype)
         else:
@@ -462,10 +470,10 @@ def G_synthesis_stylegan2(
         return apply_bias_act(x, act=act)
 
     # Building blocks for main layers.
-    def block(x, res): # res = 3..resolution_log2
+    def block(x, res, factor=2): # res = 3..resolution_log2
         t = x
         with tf.variable_scope('Conv0_up'):
-            x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True)
+            x = layer(x, layer_idx=res*2-5, fmaps=nf(res-1), kernel=3, up=True, factor=factor)
         with tf.variable_scope('Conv1'):
             x = layer(x, layer_idx=res*2-4, fmaps=nf(res-1), kernel=3)
         if architecture == 'resnet':
@@ -473,9 +481,9 @@ def G_synthesis_stylegan2(
                 t = conv2d_layer(t, fmaps=nf(res-1), kernel=1, up=True, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
-    def upsample(y):
+    def upsample(y,factor):
         with tf.variable_scope('Upsample'):
-            return upsample_2d(y, k=resample_kernel)
+            return upsample_2d(y, k=resample_kernel,factor=factor)
     def torgb(x, y, res): # res = 2..resolution_log2
         with tf.variable_scope('ToRGB'):
             t = apply_bias_act(modulated_conv2d_layer(x, dlatents_in[:, res*2-3], fmaps=num_channels, kernel=1, demodulate=False, fused_modconv=fused_modconv))
@@ -493,12 +501,17 @@ def G_synthesis_stylegan2(
             y = torgb(x, y, 2)
 
     # Main layers.
-    for res in range(3, resolution_log2 + 1):
-        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
-            x = block(x, res)
+    for res in range(3,np.max(resolution_log2) + 2):
+        res1=2**res if 2**res<resolution[0] else resolution[0]
+        res2=2**res if 2**res<resolution[1] else resolution[1]
+        with tf.variable_scope('%dx%d' % (res1, res2)):
+            factor=[res1/float(x.get_shape().as_list()[2]),res2/float(x.get_shape().as_list()[3])]
+            if(res==np.max(resolution_log2) + 1):
+                res-=1
+            x = block(x, res, factor=factor)
             if architecture == 'skip':
-                y = upsample(y)
-            if architecture == 'skip' or res == resolution_log2:
+                y = upsample(y,factor=factor[::-1])
+            if architecture == 'skip' or res == np.max(resolution_log2)+1:
                 y = torgb(x, y, res)
     images_out = y
 
@@ -628,13 +641,13 @@ def D_stylegan2(
     resample_kernel     = [1,3,3,1],    # Low-pass filter to apply when resampling activations. None = no filtering.
     **_kwargs):                         # Ignore unrecognized keyword args.
 
-    resolution_log2 = int(np.log2(resolution))
-    assert resolution == 2**resolution_log2 and resolution >= 4
+    resolution_log2 = np.log2(resolution).astype(int)
+    #assert resolution == 2**resolution_log2 and resolution >= 4
     def nf(stage): return np.clip(int(fmap_base / (2.0 ** (stage * fmap_decay))), fmap_min, fmap_max)
     assert architecture in ['orig', 'skip', 'resnet']
     act = nonlinearity
 
-    images_in.set_shape([None, num_channels, resolution, resolution])
+    images_in.set_shape([None, num_channels, resolution[0], resolution[1]])
     labels_in.set_shape([None, label_size])
     images_in = tf.cast(images_in, dtype)
     labels_in = tf.cast(labels_in, dtype)
@@ -644,31 +657,39 @@ def D_stylegan2(
         with tf.variable_scope('FromRGB'):
             t = apply_bias_act(conv2d_layer(y, fmaps=nf(res-1), kernel=1), act=act)
             return t if x is None else x + t
-    def block(x, res): # res = 2..resolution_log2
+    def block(x, res, factor): # res = 2..resolution_log2
         t = x
         with tf.variable_scope('Conv0'):
             x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-1), kernel=3), act=act)
         with tf.variable_scope('Conv1_down'):
-            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=3, down=True, resample_kernel=resample_kernel), act=act)
+            kernel=3 if (factor[0] in [1,2] and factor[1] in [1,2]) else 1
+            x = apply_bias_act(conv2d_layer(x, fmaps=nf(res-2), kernel=kernel, down=True, factor=factor, resample_kernel=resample_kernel), act=act)
         if architecture == 'resnet':
             with tf.variable_scope('Skip'):
-                t = conv2d_layer(t, fmaps=nf(res-2), kernel=1, down=True, resample_kernel=resample_kernel)
+                t = conv2d_layer(t, fmaps=nf(res-2), kernel=1, down=True, factor=factor, resample_kernel=resample_kernel)
                 x = (x + t) * (1 / np.sqrt(2))
         return x
-    def downsample(y):
+    def downsample(y,factor):
         with tf.variable_scope('Downsample'):
-            return downsample_2d(y, k=resample_kernel)
+            return downsample_2d(y, k=resample_kernel, factor=factor)
 
     # Main layers.
     x = None
     y = images_in
-    for res in range(resolution_log2, 2, -1):
-        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
-            if architecture == 'skip' or res == resolution_log2:
+    for res in range(np.max(resolution_log2)+1, 2, -1):
+        res1=2**res if 2**res<resolution[0] else resolution[0]
+        res2=2**res if 2**res<resolution[1] else resolution[1]
+        print(res1)
+        print(res2)
+        with tf.variable_scope('%dx%d' % (res1, res2)):
+            if architecture == 'skip' or res == np.max(resolution_log2)+1:
                 x = fromrgb(x, y, res)
-            x = block(x, res)
+            factor=[float(x.get_shape().as_list()[2])/res1,float(x.get_shape().as_list()[3])/res2]
+            print("fnsd: "+str(factor))
+            x = block(x, res,factor=factor[::-1])
+            print(x.shape)
             if architecture == 'skip':
-                y = downsample(y)
+                y = downsample(y,factor=factor[::-1])
 
     # Final layers.
     with tf.variable_scope('4x4'):

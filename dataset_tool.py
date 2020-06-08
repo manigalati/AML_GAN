@@ -69,8 +69,8 @@ class TFRecordExporter:
             self.shape = img.shape
             self.resolution_log2 = int(np.log2(self.shape[1]))
             assert self.shape[0] in [1, 3]
-            assert self.shape[1] == self.shape[2]
-            assert self.shape[1] == 2**self.resolution_log2
+            """assert self.shape[1] == self.shape[2]
+            assert self.shape[1] == 2**self.resolution_log2"""
             tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
             for lod in range(self.resolution_log2 - 1):
                 tfr_file = self.tfr_prefix + '-r%02d.tfrecords' % (self.resolution_log2 - lod)
@@ -79,7 +79,7 @@ class TFRecordExporter:
         for lod, tfr_writer in enumerate(self.tfr_writers):
             if lod:
                 img = img.astype(np.float32)
-                img = (img[:, 0::2, 0::2] + img[:, 0::2, 1::2] + img[:, 1::2, 0::2] + img[:, 1::2, 1::2]) * 0.25
+                #img = (img[:, 0::2, 0::2] + img[:, 0::2, 1::2] + img[:, 1::2, 0::2] + img[:, 1::2, 1::2]) * 0.25
             quant = np.rint(img).clip(0, 255).astype(np.uint8)
             ex = tf.train.Example(features=tf.train.Features(feature={
                 'shape': tf.train.Feature(int64_list=tf.train.Int64List(value=quant.shape)),
@@ -508,10 +508,10 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
     img = np.asarray(PIL.Image.open(image_filenames[0]))
     resolution = img.shape[0]
     channels = img.shape[2] if img.ndim == 3 else 1
-    if img.shape[1] != resolution:
+    """if img.shape[1] != resolution:
         error('Input images must have the same width and height')
     if resolution != 2 ** int(np.floor(np.log2(resolution))):
-        error('Input image resolution must be a power-of-two')
+        error('Input image resolution must be a power-of-two')"""
     if channels not in [1, 3]:
         error('Input images must be stored as RGB or grayscale')
 

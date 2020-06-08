@@ -111,21 +111,21 @@ def _upfirdn_2d_cuda(x, k, upx, upy, downx, downy, padx0, padx1, pady0, pady1):
     kernelH, kernelW = k.shape
     assert inW >= 1 and inH >= 1
     assert kernelW >= 1 and kernelH >= 1
-    assert isinstance(upx, int) and isinstance(upy, int)
-    assert isinstance(downx, int) and isinstance(downy, int)
+    #assert isinstance(upx, int) and isinstance(upy, int)
+    #assert isinstance(downx, int) and isinstance(downy, int)
     assert isinstance(padx0, int) and isinstance(padx1, int)
     assert isinstance(pady0, int) and isinstance(pady1, int)
 
-    outW = (inW * upx + padx0 + padx1 - kernelW) // downx + 1
-    outH = (inH * upy + pady0 + pady1 - kernelH) // downy + 1
+    outW = (int(inW * upx) + padx0 + padx1 - kernelW) // downx + 1
+    outH = (int(inH * upy) + pady0 + pady1 - kernelH) // downy + 1
     assert outW >= 1 and outH >= 1
 
     kc = tf.constant(k, dtype=x.dtype)
     gkc = tf.constant(k[::-1, ::-1], dtype=x.dtype)
     gpadx0 = kernelW - padx0 - 1
     gpady0 = kernelH - pady0 - 1
-    gpadx1 = inW * upx - outW * downx + padx0 - upx + 1
-    gpady1 = inH * upy - outH * downy + pady0 - upy + 1
+    gpadx1 = int(inW * upx) - int(outW * downx) + padx0 - int(upx) + 1
+    gpady1 = int(inH * upy) - int(outH * downy) + pady0 - int(upy) + 1
 
     @tf.custom_gradient
     def func(x):
@@ -190,12 +190,14 @@ def upsample_2d(x, k=None, factor=2, gain=1, data_format='NCHW', impl='cuda'):
         `[N, H * factor, W * factor, C]`, and same datatype as `x`.
     """
 
+    factors=factor
+    factor=int(np.max(factors))
     assert isinstance(factor, int) and factor >= 1
     if k is None:
         k = [1] * factor
     k = _setup_kernel(k) * (gain * (factor ** 2))
     p = k.shape[0] - factor
-    return _simple_upfirdn_2d(x, k, up=factor, pad0=(p+1)//2+factor-1, pad1=p//2, data_format=data_format, impl=impl)
+    return _simple_upfirdn_2d(x, k, up=factors, pad0=(p+1)//2+factor-1, pad1=p//2, data_format=data_format, impl=impl)
 
 #----------------------------------------------------------------------------
 
@@ -222,12 +224,14 @@ def downsample_2d(x, k=None, factor=2, gain=1, data_format='NCHW', impl='cuda'):
         `[N, H // factor, W // factor, C]`, and same datatype as `x`.
     """
 
+    factors=factor
+    factor=int(np.max(factors))
     assert isinstance(factor, int) and factor >= 1
     if k is None:
         k = [1] * factor
     k = _setup_kernel(k) * gain
     p = k.shape[0] - factor
-    return _simple_upfirdn_2d(x, k, down=factor, pad0=(p+1)//2, pad1=p//2, data_format=data_format, impl=impl)
+    return _simple_upfirdn_2d(x, k, down=factors, pad0=(p+1)//2, pad1=p//2, data_format=data_format, impl=impl)
 
 #----------------------------------------------------------------------------
 
@@ -255,6 +259,8 @@ def upsample_conv_2d(x, w, k=None, factor=2, gain=1, data_format='NCHW', impl='c
         `[N, H * factor, W * factor, C]`, and same datatype as `x`.
     """
 
+    factors=factor
+    factor=int(np.max(factors))
     assert isinstance(factor, int) and factor >= 1
 
     # Check weight shape.
@@ -275,11 +281,19 @@ def upsample_conv_2d(x, w, k=None, factor=2, gain=1, data_format='NCHW', impl='c
     # Determine data dimensions.
     if data_format == 'NCHW':
         stride = [1, 1, factor, factor]
-        output_shape = [_shape(x, 0), outC, (_shape(x, 2) - 1) * factor + convH, (_shape(x, 3) - 1) * factor + convW]
+        output_shape = [_shape(x, 0), outC, int((_shape(x, 2) - 1) * factors[0]) + convH, int((_shape(x, 3) - 1) * factors[1]) + convW]
+        if(factors[0]==1):
+            output_shape[2]=_shape(x, 2)+1
+        if(factors[1]==1):
+            output_shape[3]=_shape(x, 3)+1
         num_groups = _shape(x, 1) // inC
     else:
         stride = [1, factor, factor, 1]
-        output_shape = [_shape(x, 0), (_shape(x, 1) - 1) * factor + convH, (_shape(x, 2) - 1) * factor + convW, outC]
+        output_shape = [_shape(x, 0), int((_shape(x, 1) - 1) * factors[0]) + convH, int((_shape(x, 2) - 1) * factors[1]) + convW, outC]
+        if(factors[0]==1):
+            output_shape[1]=_shape(x, 1)+1
+        if(factors[1]==1):
+            output_shape[2]=_shape(x, 2)+1
         num_groups = _shape(x, 3) // inC
 
     # Transpose weights.
@@ -316,6 +330,8 @@ def conv_downsample_2d(x, w, k=None, factor=2, gain=1, data_format='NCHW', impl=
         `[N, H // factor, W // factor, C]`, and same datatype as `x`.
     """
 
+    factors=factor
+    factor=int(np.max(factors))
     assert isinstance(factor, int) and factor >= 1
     w = tf.convert_to_tensor(w)
     convH, convW, _inC, _outC = w.shape.as_list()
@@ -328,7 +344,8 @@ def conv_downsample_2d(x, w, k=None, factor=2, gain=1, data_format='NCHW', impl=
         s = [1, 1, factor, factor]
     else:
         s = [1, factor, factor, 1]
-    x = _simple_upfirdn_2d(x, k, pad0=(p+1)//2, pad1=p//2, data_format=data_format, impl=impl)
+    x = _simple_upfirdn_2d(x, k, down=factors, pad0=(p+1)//2, pad1=p//2, data_format=data_format, impl=impl)
+    print("CULONE "+str(x.shape))
     return tf.nn.conv2d(x, w, strides=s, padding='VALID', data_format=data_format)
 
 #----------------------------------------------------------------------------
@@ -351,12 +368,20 @@ def _setup_kernel(k):
     return k
 
 def _simple_upfirdn_2d(x, k, up=1, down=1, pad0=0, pad1=0, data_format='NCHW', impl='cuda'):
+    if(type(up)==list):
+        upx,upy=up[0],up[1]
+    else:
+        upx,upy=up,up
+    if(type(down)==list):
+        downx,downy=down[0],down[1]
+    else:
+        downx,downy=down,down
     assert data_format in ['NCHW', 'NHWC']
     assert x.shape.rank == 4
     y = x
     if data_format == 'NCHW':
         y = tf.reshape(y, [-1, _shape(y, 2), _shape(y, 3), 1])
-    y = upfirdn_2d(y, k, upx=up, upy=up, downx=down, downy=down, padx0=pad0, padx1=pad1, pady0=pad0, pady1=pad1, impl=impl)
+    y = upfirdn_2d(y, k, upx=upx, upy=upy, downx=downx, downy=downy, padx0=pad0, padx1=pad1, pady0=pad0, pady1=pad1, impl=impl)
     if data_format == 'NCHW':
         y = tf.reshape(y, [-1, _shape(x, 1), _shape(y, 1), _shape(y, 2)])
     return y

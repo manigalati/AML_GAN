@@ -146,8 +146,8 @@ def training_loop(
     with tf.device('/gpu:0'):
         if resume_pkl is None or resume_with_new_nets:
             print('Constructing networks...')
-            G = tflib.Network('G', num_channels=training_set.shape[0], resolution=training_set.shape[1], label_size=training_set.label_size, **G_args)
-            D = tflib.Network('D', num_channels=training_set.shape[0], resolution=training_set.shape[1], label_size=training_set.label_size, **D_args)
+            G = tflib.Network('G', num_channels=training_set.shape[0], resolution=training_set.shape[1:], label_size=training_set.label_size, **G_args)
+            D = tflib.Network('D', num_channels=training_set.shape[0], resolution=training_set.shape[1:], label_size=training_set.label_size, **D_args)
             Gs = G.clone('Gs')
         if resume_pkl is not None:
             print('Loading networks from "%s"...' % resume_pkl)

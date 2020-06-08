@@ -112,6 +112,7 @@ def setup_snapshot_image_grid(training_set,
     reals = np.zeros([gw * gh] + training_set.shape, dtype=training_set.dtype)
     labels = np.zeros([gw * gh, training_set.label_size], dtype=training_set.label_dtype)
 
+    print(training_set.shape)
     # Random layout.
     if layout == 'random':
         reals[:], labels[:] = training_set.get_minibatch_np(gw * gh)
