@@ -332,6 +332,8 @@ def conv_downsample_2d(x, w, k=None, factor=2, gain=1, data_format='NCHW', impl=
 
     factors=factor
     factor=int(np.max(factors))
+    if(factors[0]==2 and factors[1]==1):
+        factor=int(np.min(factors))
     assert isinstance(factor, int) and factor >= 1
     w = tf.convert_to_tensor(w)
     convH, convW, _inC, _outC = w.shape.as_list()
